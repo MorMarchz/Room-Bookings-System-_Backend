@@ -2,11 +2,13 @@ const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const cors = require('cors'); // เพิ่มบรรทัดนี้
 
 const app = express();
 
 // Middleware
 app.use(express.json());
+app.use(cors()); // เพิ่มบรรทัดนี้
 
 // MongoDB connection
 mongoose.connect('mongodb://localhost:27017/Roombookings_System')
@@ -120,7 +122,7 @@ app.get('/api/get-sensors/latest-all', verifyToken, (req, res) => {
 });
 
 // Start server
-const PORT = 5000;
+const PORT = 5001;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
