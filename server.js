@@ -121,6 +121,17 @@ app.get('/api/get-sensors/latest-all', verifyToken, (req, res) => {
     res.json({ message: 'Latest all sensors data (protected)' });
 });
 
+// GET all users (only fullname and role)
+app.get('/api/profile', verifyToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id, { password: 0, _id: 0, __v: 0 });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        res.json(user);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch profile' });
+    }
+});
+
 // Start server
 const PORT = 5001;
 app.listen(PORT, () => {
