@@ -132,6 +132,88 @@ app.get('/api/profile', verifyToken, async (req, res) => {
     }
 });
 
+// Booking Schema (เพิ่ม room_id, room_name, user_id, fullname)
+const bookingSchema = new mongoose.Schema({
+    start_datetime: { type: Date, required: true },
+    end_datetime: { type: Date, required: true },
+    duration_hours: { type: Number, required: true },
+    status: { type: String, required: true },
+    room_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true },
+    room_name: { type: String, required: true },
+    user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    fullname: { type: String, required: true }
+}, { collection: 'bookings' });
+
+const Booking = mongoose.model('Booking', bookingSchema);
+
+// Create booking API (ดึง room_name และ fullname จาก id ที่ส่งมา)
+// แก้ไข Backend API ให้รับ room_name แทน room_id
+app.post('/api/bookings', verifyToken, async (req, res) => {
+    const { start_datetime, end_datetime, duration_hours, room_name } = req.body;
+    
+    // เปลี่ยนการ check required fields
+    if (!start_datetime || !end_datetime || !duration_hours || !room_name) {
+        return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+    }
+    
+    try {
+        // หาห้องจาก room_name แทน room_id
+        const room = await Room.findOne({ room_name: room_name });
+        if (!room) {
+            return res.status(404).json({ error: 'ไม่พบห้องที่ระบุ' });
+        }
+
+        // ตรวจสอบว่าห้องว่างหรือไม่
+        if (room.status !== 'available') {
+            return res.status(400).json({ error: 'ห้องไม่ว่าง ไม่สามารถจองได้' });
+        }
+
+        // ดึงข้อมูล user จาก token
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: 'ไม่พบข้อมูลผู้ใช้' });
+        }
+
+        // ตรวจสอบการจองที่ซ้อนทับ (optional)
+        const overlappingBooking = await Booking.findOne({
+            room_id: room._id,
+            status: { $ne: 'cancelled' },
+            $or: [
+                {
+                    start_datetime: { $lt: new Date(end_datetime) },
+                    end_datetime: { $gt: new Date(start_datetime) }
+                }
+            ]
+        });
+
+        if (overlappingBooking) {
+            return res.status(400).json({ error: 'ช่วงเวลานี้ห้องถูกจองแล้ว' });
+        }
+
+        const newBooking = new Booking({
+            start_datetime: new Date(start_datetime),
+            end_datetime: new Date(end_datetime),
+            duration_hours,
+            status: 'confirmed', // ตั้งค่า default status
+            room_id: room._id,
+            room_name: room.room_name,
+            user_id: user._id,
+            fullname: user.fullname
+        });
+        
+        await newBooking.save();
+        
+        res.status(201).json({ 
+            message: 'จองห้องสำเร็จ', 
+            booking: newBooking 
+        });
+        
+    } catch (err) {
+        console.error('Booking error:', err);
+        res.status(500).json({ error: 'เกิดข้อผิดพลาดในระบบ' });
+    }
+});
+
 // Start server
 const PORT = 5001;
 app.listen(PORT, () => {
