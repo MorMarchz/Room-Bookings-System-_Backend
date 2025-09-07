@@ -213,6 +213,79 @@ app.get('/api/bookings_list', verifyToken, async (req, res) => {
     }
 });
 
+// PUT update booking for logged in user
+app.put('/api/bookings_list/update/:id', verifyToken, async (req, res) => {
+    const bookingId = req.params.id;
+    const { start_datetime, end_datetime, duration_hours, status, room_id } = req.body;
+    
+    try {
+        // ตรวจสอบว่า booking นี้เป็นของ user ที่ login หรือไม่
+        const existingBooking = await Booking.findOne({ 
+            _id: bookingId, 
+            user_id: req.user.id 
+        });
+        
+        if (!existingBooking) {
+            return res.status(404).json({ error: 'Booking not found or you do not have permission to edit this booking.' });
+        }
+
+        // ถ้ามีการส่ง room_id มาใหม่ ให้ดึงชื่อห้องใหม่
+        let updateData = { start_datetime, end_datetime, duration_hours, status };
+        
+        if (room_id && room_id !== existingBooking.room_id.toString()) {
+            const room = await Room.findById(room_id);
+            if (!room) return res.status(404).json({ error: 'Room not found.' });
+            updateData.room_id = room._id;
+            updateData.room_name = room.room_name;
+        }
+
+        const updatedBooking = await Booking.findByIdAndUpdate(
+            bookingId, 
+            updateData, 
+            { new: true }
+        );
+
+        res.json({ 
+            message: 'Booking updated successfully.', 
+            booking: updatedBooking 
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update booking.' });
+    }
+});
+
+// DELETE booking for logged in user
+app.delete('/api/bookings_list/delete/:id', verifyToken, async (req, res) => {
+    const bookingId = req.params.id;
+    
+    try {
+        // ตรวจสอบว่า booking นี้เป็นของ user ที่ login หรือไม่
+        const existingBooking = await Booking.findOne({ 
+            _id: bookingId, 
+            user_id: req.user.id 
+        });
+        
+        if (!existingBooking) {
+            return res.status(404).json({ error: 'Booking not found or you do not have permission to delete this booking.' });
+        }
+
+        // ลบ booking
+        await Booking.findByIdAndDelete(bookingId);
+
+        res.json({ 
+            message: 'Booking deleted successfully.',
+            deleted_booking: {
+                id: existingBooking._id,
+                room_name: existingBooking.room_name,
+                start_datetime: existingBooking.start_datetime,
+                end_datetime: existingBooking.end_datetime
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete booking.' });
+    }
+});
+
 // Start server
 const PORT = 5001;
 app.listen(PORT, () => {
