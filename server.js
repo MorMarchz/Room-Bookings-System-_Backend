@@ -2,7 +2,10 @@ const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const cors = require('cors'); // เพิ่มบรรทัดนี้
+const cors = require('cors');
+
+// ตั้งค่า timezone เป็นประเทศไทย
+process.env.TZ = 'Asia/Bangkok';
 
 const app = express();
 
@@ -51,7 +54,8 @@ const userSchema = new mongoose.Schema({
     password: String, // hashed password
     fullname: String,
     email: { type: String, unique: true },
-    role: { type: String, enum: ['student', 'teacher'], required: true }
+    role: { type: String, enum: ['student', 'teacher'], required: true },
+    created_at: { type: Date, default: Date.now } // วันที่สร้างบัญชีอัตโนมัติ
 }, { collection: 'users' });
 
 const User = mongoose.model('User', userSchema);
@@ -80,9 +84,25 @@ app.post('/api/regis', async (req, res) => {
         if (existingUser) return res.status(409).json({ error: 'Username or email already exists.' });
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = new User({ username, password: hashedPassword, fullname, email, role });
+        const newUser = new User({ 
+            username, 
+            password: hashedPassword, 
+            fullname, 
+            email, 
+            role 
+            // created_at จะถูกสร้างอัตโนมัติ
+        });
         await newUser.save();
-        res.status(201).json({ message: 'User registered successfully.' });
+        res.status(201).json({ 
+            message: 'User registered successfully.',
+            user: {
+                username: newUser.username,
+                fullname: newUser.fullname,
+                email: newUser.email,
+                role: newUser.role,
+                created_at: newUser.created_at
+            }
+        });
     } catch (err) {
         res.status(500).json({ error: 'Registration failed.' });
     }
@@ -132,7 +152,7 @@ app.get('/api/profile', verifyToken, async (req, res) => {
     }
 });
 
-// Booking Schema (เพิ่ม room_id, room_name, user_id, fullname)
+// Booking Schema (เพิ่ม created_at สำหรับวันที่ยืม)
 const bookingSchema = new mongoose.Schema({
     start_datetime: { type: Date, required: true },
     end_datetime: { type: Date, required: true },
@@ -141,76 +161,55 @@ const bookingSchema = new mongoose.Schema({
     room_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true },
     room_name: { type: String, required: true },
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    fullname: { type: String, required: true }
+    fullname: { type: String, required: true },
+    created_at: { type: Date, default: Date.now } // วันที่ยืม/จองอัตโนมัติ
 }, { collection: 'bookings' });
 
 const Booking = mongoose.model('Booking', bookingSchema);
 
-// Create booking API (ดึง room_name และ fullname จาก id ที่ส่งมา)
-// แก้ไข Backend API ให้รับ room_name แทน room_id
+// Create booking API (มีการบอกวันที่ยืมอัตโนมัติ)
 app.post('/api/bookings', verifyToken, async (req, res) => {
-    const { start_datetime, end_datetime, duration_hours, room_name } = req.body;
-    
-    // เปลี่ยนการ check required fields
-    if (!start_datetime || !end_datetime || !duration_hours || !room_name) {
-        return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+    const { start_datetime, end_datetime, duration_hours, status, room_id } = req.body;
+    if (!start_datetime || !end_datetime || !duration_hours || !status || !room_id) {
+        return res.status(400).json({ error: 'All fields are required.' });
     }
-    
     try {
-        // หาห้องจาก room_name แทน room_id
-        const room = await Room.findOne({ room_name: room_name });
-        if (!room) {
-            return res.status(404).json({ error: 'ไม่พบห้องที่ระบุ' });
-        }
-
-        // ตรวจสอบว่าห้องว่างหรือไม่
-        if (room.status !== 'available') {
-            return res.status(400).json({ error: 'ห้องไม่ว่าง ไม่สามารถจองได้' });
-        }
+        // ดึงข้อมูลห้อง
+        const room = await Room.findById(room_id);
+        if (!room) return res.status(404).json({ error: 'Room not found.' });
 
         // ดึงข้อมูล user จาก token
         const user = await User.findById(req.user.id);
-        if (!user) {
-            return res.status(404).json({ error: 'ไม่พบข้อมูลผู้ใช้' });
-        }
-
-        // ตรวจสอบการจองที่ซ้อนทับ (optional)
-        const overlappingBooking = await Booking.findOne({
-            room_id: room._id,
-            status: { $ne: 'cancelled' },
-            $or: [
-                {
-                    start_datetime: { $lt: new Date(end_datetime) },
-                    end_datetime: { $gt: new Date(start_datetime) }
-                }
-            ]
-        });
-
-        if (overlappingBooking) {
-            return res.status(400).json({ error: 'ช่วงเวลานี้ห้องถูกจองแล้ว' });
-        }
+        if (!user) return res.status(404).json({ error: 'User not found.' });
 
         const newBooking = new Booking({
-            start_datetime: new Date(start_datetime),
-            end_datetime: new Date(end_datetime),
+            start_datetime,
+            end_datetime,
             duration_hours,
-            status: 'confirmed', // ตั้งค่า default status
+            status,
             room_id: room._id,
             room_name: room.room_name,
             user_id: user._id,
             fullname: user.fullname
+            // created_at จะถูกสร้างอัตโนมัติ
         });
-        
         await newBooking.save();
-        
         res.status(201).json({ 
-            message: 'จองห้องสำเร็จ', 
+            message: 'Booking created successfully.', 
             booking: newBooking 
         });
-        
     } catch (err) {
-        console.error('Booking error:', err);
-        res.status(500).json({ error: 'เกิดข้อผิดพลาดในระบบ' });
+        res.status(500).json({ error: 'Failed to create booking.' });
+    }
+});
+
+// GET booking list for logged in user
+app.get('/api/bookings_list', verifyToken, async (req, res) => {
+    try {
+        const bookings = await Booking.find({ user_id: req.user.id });
+        res.json(bookings);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch bookings' });
     }
 });
 
