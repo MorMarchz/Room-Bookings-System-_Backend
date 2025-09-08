@@ -54,7 +54,7 @@ const userSchema = new mongoose.Schema({
     password: String, // hashed password
     fullname: String,
     email: { type: String, unique: true },
-    role: { type: String, enum: ['student', 'teacher'], required: true },
+    role: { type: String, enum: ['student', 'teacher', 'admin'], required: true },
     created_at: { type: Date, default: Date.now } // วันที่สร้างบัญชีอัตโนมัติ
 }, { collection: 'users' });
 
@@ -206,7 +206,14 @@ app.post('/api/bookings', verifyToken, async (req, res) => {
 // GET booking list for logged in user
 app.get('/api/bookings_list', verifyToken, async (req, res) => {
     try {
-        const bookings = await Booking.find({ user_id: req.user.id });
+        let bookings;
+        if (req.user.role === 'admin') {
+            // Admin เห็นทุก booking
+            bookings = await Booking.find({});
+        } else {
+            // User ปกติเห็นแค่ของตัวเอง
+            bookings = await Booking.find({ user_id: req.user.id });
+        }
         res.json(bookings);
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch bookings' });
@@ -282,6 +289,141 @@ app.delete('/api/bookings_list/delete/:id', verifyToken, async (req, res) => {
             }
         });
     } catch (err) {
+        res.status(500).json({ error: 'Failed to delete booking.' });
+    }
+});
+
+// PUT update status in rooms or bookings (admin only)
+app.put('/api/admin_update/:id', verifyToken, async (req, res) => {
+    const { status, type } = req.body; // type: 'room' หรือ 'booking'
+    const { id } = req.params;
+
+    if (!status || !type) {
+        return res.status(400).json({ error: 'status and type are required.' });
+    }
+
+    try {
+        let updatedDoc = null;
+
+        if (type === 'room') {
+            // ตรวจสอบว่าเป็น admin
+            if (req.user.role !== 'admin') {
+                return res.status(403).json({ error: 'Access denied. Admin only.' });
+            }
+            
+            updatedDoc = await Room.findByIdAndUpdate(
+                id,
+                { status },
+                { new: true }
+            );
+            if (!updatedDoc) return res.status(404).json({ error: 'Room not found.' });
+            
+        } else if (type === 'booking') {
+            // ให้ admin อนุมัติ booking ของใครก็ได้, user ปกติแก้ได้เฉพาะของตัวเอง
+            if (req.user.role === 'admin') {
+                // Admin สามารถอนุมัติ booking ใดก็ได้
+                updatedDoc = await Booking.findByIdAndUpdate(
+                    id,
+                    { status },
+                    { new: true }
+                );
+                if (!updatedDoc) return res.status(404).json({ error: 'Booking not found.' });
+                
+                // 🔥 เพิ่มส่วนนี้: อัพเดท room status เมื่ออนุมัติ booking
+                if (status === 'approved') {
+                    await Room.findByIdAndUpdate(
+                        updatedDoc.room_id,
+                        { status: 'booked' }, // เปลี่ยน room status เป็น 'booked'
+                        { new: true }
+                    );
+                    console.log(`Room ${updatedDoc.room_name} status updated to 'booked'`);
+                } else if (status === 'cancelled' || status === 'rejected') {
+                    // ถ้ายกเลิกหรือปฏิเสธ ให้ room กลับเป็นว่าง
+                    await Room.findByIdAndUpdate(
+                        updatedDoc.room_id,
+                        { status: 'available' },
+                        { new: true }
+                    );
+                    console.log(`Room ${updatedDoc.room_name} status updated to 'available'`);
+                }
+                
+            } else {
+                // User ปกติแก้ได้เฉพาะของตัวเอง
+                const booking = await Booking.findOne({ _id: id, user_id: req.user.id });
+                if (!booking) return res.status(404).json({ error: 'Booking not found or you do not have permission.' });
+
+                updatedDoc = await Booking.findByIdAndUpdate(
+                    id,
+                    { status },
+                    { new: true }
+                );
+                
+                // User ยกเลิก booking ของตัวเอง
+                if (status === 'cancelled') {
+                    await Room.findByIdAndUpdate(
+                        updatedDoc.room_id,
+                        { status: 'available' },
+                        { new: true }
+                    );
+                }
+            }
+        } else {
+            return res.status(400).json({ error: 'Invalid type. Must be "room" or "booking".' });
+        }
+
+        res.json({
+            message: `${type} status updated successfully.`,
+            updated: updatedDoc
+        });
+    } catch (err) {
+        console.error('Error updating status:', err);
+        res.status(500).json({ error: 'Failed to update status.' });
+    }
+});
+
+// DELETE booking for admin (can delete any booking)
+app.delete('/api/admin/booking/:id', verifyToken, async (req, res) => {
+    const bookingId = req.params.id;
+    
+    try {
+        // ตรวจสอบว่าเป็น admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Access denied. Admin only.' });
+        }
+
+        // หา booking ที่จะลบ
+        const existingBooking = await Booking.findById(bookingId);
+        if (!existingBooking) {
+            return res.status(404).json({ error: 'Booking not found.' });
+        }
+
+        // ลบ booking
+        await Booking.findByIdAndDelete(bookingId);
+
+        // 🔥 อัพเดท room status กลับเป็นว่าง
+        await Room.findByIdAndUpdate(
+            existingBooking.room_id,
+            { status: 'available' },
+            { new: true }
+        );
+
+        console.log(`Admin deleted booking: ${existingBooking.room_name} - Room status updated to 'available'`);
+
+        res.json({ 
+            message: 'Booking deleted successfully by admin.',
+            deleted_booking: {
+                id: existingBooking._id,
+                room_name: existingBooking.room_name,
+                room_id: existingBooking.room_id,
+                user_fullname: existingBooking.fullname,
+                start_datetime: existingBooking.start_datetime,
+                end_datetime: existingBooking.end_datetime,
+                status: existingBooking.status
+            },
+            room_status_updated: 'available'
+        });
+    } catch (err) {
+        console.error('Error deleting booking (admin):', err);
         res.status(500).json({ error: 'Failed to delete booking.' });
     }
 });
