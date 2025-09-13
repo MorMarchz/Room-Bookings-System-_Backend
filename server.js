@@ -3,6 +3,9 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 // ตั้งค่า timezone เป็นประเทศไทย
 process.env.TZ = 'Asia/Bangkok';
@@ -48,13 +51,14 @@ app.get('/api/rooms', async (req, res) => {
 // JWT Secret Key
 const JWT_SECRET = 'your_jwt_secret_key';
 
-// User Schema
+// User Schema (เพิ่ม profile_image)
 const userSchema = new mongoose.Schema({
     username: { type: String, unique: true },
     password: String, // hashed password
     fullname: String,
     email: { type: String, unique: true },
     role: { type: String, enum: ['student', 'teacher', 'admin'], required: true },
+    profile_image: { type: String, default: null }, // เพิ่มฟิลด์นี้
     created_at: { type: Date, default: Date.now } // วันที่สร้างบัญชีอัตโนมัติ
 }, { collection: 'users' });
 
@@ -427,6 +431,92 @@ app.delete('/api/admin/booking/:id', verifyToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to delete booking.' });
     }
 });
+
+// ตั้งค่า multer สำหรับการอัพโหลดรูปภาพ
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadPath = 'uploads/profile/';
+        // สร้างโฟลเดอร์ถ้ายังไม่มี
+        if (!fs.existsSync(uploadPath)) {
+            fs.mkdirSync(uploadPath, { recursive: true });
+        }
+        cb(null, uploadPath);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, 'profile-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const fileFilter = (req, file, cb) => {
+    // อนุญาตเฉพาะไฟล์รูปภาพ
+    if (file.mimetype.startsWith('image/')) {
+        cb(null, true);
+    } else {
+        cb(new Error('Only image files are allowed!'), false);
+    }
+};
+
+const upload = multer({ 
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: {
+        fileSize: 5 * 1024 * 1024 // จำกัดขนาดไฟล์ 5MB
+    }
+});
+
+// PUT upload profile image
+app.put('/api/user/image', verifyToken, upload.single('profile_image'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No image file uploaded.' });
+        }
+
+        // อัพเดทข้อมูล user ด้วยชื่อไฟล์รูปภาพ
+        const imagePath = req.file.filename;
+        const updatedUser = await User.findByIdAndUpdate(
+            req.user.id,
+            { profile_image: imagePath },
+            { new: true, select: '-password' }
+        );
+
+        if (!updatedUser) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        res.json({
+            message: 'Profile image uploaded successfully.',
+            user: {
+                id: updatedUser._id,
+                username: updatedUser.username,
+                fullname: updatedUser.fullname,
+                email: updatedUser.email,
+                role: updatedUser.role,
+                profile_image: updatedUser.profile_image,
+                image_url: `http://localhost:5001/uploads/profile/${updatedUser.profile_image}`
+            }
+        });
+    } catch (err) {
+        console.error('Error uploading image:', err);
+        res.status(500).json({ error: 'Failed to upload profile image.' });
+    }
+});
+
+// Error handling middleware สำหรับ multer
+app.use((error, req, res, next) => {
+    if (error instanceof multer.MulterError) {
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ error: 'File too large (max 5MB)' });
+        }
+        if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+            return res.status(400).json({ error: 'Invalid field name. Use "profile_image"' });
+        }
+    }
+    res.status(500).json({ error: error.message });
+});
+
+// Serve static files (สำหรับแสดงรูปภาพ)
+app.use('/uploads', express.static('uploads'));
 
 // Start server
 const PORT = 5001;
